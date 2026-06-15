@@ -2,24 +2,45 @@
   "id": "com.mimir.slowmovie",
   "name": "Slow Movie Player",
   "description": "Plays movies one frame at a time at ultra-slow speeds, inspired by the Very Slow Movie Player concept",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "embedded",
   "entry_point": "channel.py",
   "class_name": "SlowMovieChannel",
   "icon": "film",
   "author": "Ryan Lane",
-  "tags": ["video", "movie", "slow", "frame", "epaper", "display"],
+  "tags": [
+    "video",
+    "movie",
+    "slow",
+    "frame",
+    "epaper",
+    "display"
+  ],
   "schemaVersion": "2.4",
   "settingsType": "advanced",
   "config": {
     "supports_upload": true,
-    "video_formats": ["mp4", "avi", "mov", "mkv", "webm"],
+    "video_formats": [
+      "mp4",
+      "avi",
+      "mov",
+      "mkv",
+      "webm"
+    ],
     "max_file_size": "10GB"
   },
   "requirements": {
     "python": ">=3.8",
-    "dependencies": ["fastapi", "pillow", "opencv-python-headless"]
+    "dependencies": [
+      "fastapi",
+      "pillow",
+      "opencv-python-headless"
+    ]
   },
+  "user_data_dirs": [
+    "data",
+    "videos"
+  ],
   "update_schedule": {
     "unit": "minutes",
     "duration": 30,
@@ -28,7 +49,10 @@
   },
   "placeholder_image": "placeholder.jpg",
   "current_image": "data/current.jpg",
-  "permissions": ["read:videos", "write:videos"],
+  "permissions": [
+    "read:videos",
+    "write:videos"
+  ],
   "settings": {
     "defaults": {
       "skip_frames": 1,
