@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import random
 import time
 import uuid
 from datetime import datetime, timezone
@@ -30,6 +31,17 @@ if not logger.handlers:
     logging.basicConfig(level=logging.INFO)
 
 SUPPORTED_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+
+_MOVIE_UPDATE_FIELDS = {
+    "title", "time_per_frame", "time_per_frame_unit", "skip_frames", "is_random",
+    "loop", "start_frame", "end_frame", "fit_mode", "grayscale", "dither_mode",
+}
+
+
+def _movie_to_subchannel(movie: "Movie") -> Dict[str, Any]:
+    d = movie.to_dict()
+    d["name"] = movie.title  # standard subchannel field expected by the platform
+    return d
 
 
 class SlowMovieChannel:
@@ -98,13 +110,29 @@ class SlowMovieChannel:
     # Core: frame advance + render
 
     def _next_frame_number(self, movie: Movie, skip: int) -> int:
-        """Return the next frame index, wrapping at end of movie."""
+        """Return the next frame index, respecting clip boundaries and loop setting."""
         if movie.total_frames <= 0:
             return 0
+
+        start = max(0, movie.start_frame or 0)
+        end = (
+            min(movie.total_frames - 1, movie.end_frame)
+            if movie.end_frame is not None
+            else movie.total_frames - 1
+        )
+        if end <= start:
+            return start
+
         if movie.is_random:
-            import random
-            return random.randint(0, movie.total_frames - 1)
-        return (movie.current_frame + skip) % movie.total_frames
+            return random.randint(start, end)
+
+        next_frame = movie.current_frame + skip
+        if next_frame > end:
+            next_frame = start if movie.loop else end
+        elif next_frame < start:
+            next_frame = start
+
+        return next_frame
 
     def _render_frame(
         self,
@@ -116,7 +144,14 @@ class SlowMovieChannel:
         if not video_path.exists():
             logger.error("[SlowMovie] Video file not found: %s", video_path)
             return None
-        return VideoService.extract_frame(video_path, frame_number, target_size)
+        return VideoService.extract_frame(
+            video_path,
+            frame_number,
+            target_size,
+            fit_mode=movie.fit_mode or "letterbox",
+            grayscale=bool(movie.grayscale),
+            dither_mode=movie.dither_mode or "none",
+        )
 
     # -------------------------------------------------------------------------
     # Mimir ChannelProtocol interface
@@ -135,6 +170,7 @@ class SlowMovieChannel:
             "icon": "film",
             "capabilities": {
                 "supports_upload": True,
+                "supports_subchannels": True,
                 "video_formats": ["mp4", "avi", "mov", "mkv", "webm"],
             },
             "ui": {
@@ -181,6 +217,40 @@ class SlowMovieChannel:
             })
         return status
 
+    # -------------------------------------------------------------------------
+    # Sub-channel protocol (each movie is a sub-channel)
+
+    def supports_subchannels(self) -> bool:
+        return True
+
+    def get_subchannel_config(self) -> Dict[str, Any]:
+        return {
+            "label": "Movies",
+            "singular": "Movie",
+            "description": "Each movie in the library is an independent sub-channel",
+            "can_create": False,
+            "can_delete": True,
+            "can_update": True,
+        }
+
+    def get_subchannels(self) -> List[Dict[str, Any]]:
+        return [_movie_to_subchannel(m) for m in self.db.list_movies()]
+
+    def get_subchannel(self, subchannel_id: str) -> Optional[Dict[str, Any]]:
+        movie = self.db.get_movie(subchannel_id)
+        return _movie_to_subchannel(movie) if movie else None
+
+    def update_subchannel(self, subchannel_id: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        allowed = _MOVIE_UPDATE_FIELDS
+        updates = {k: v for k, v in data.items() if k in allowed}
+        updated = self.db.update_movie(subchannel_id, updates)
+        return _movie_to_subchannel(updated) if updated else None
+
+    def delete_subchannel(self, subchannel_id: str) -> bool:
+        return self.db.delete_movie(subchannel_id)
+
+    # -------------------------------------------------------------------------
+
     async def request_image(self, request_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Advance the active movie by skip_frames and return the new frame as JPEG bytes.
 
@@ -195,8 +265,8 @@ class SlowMovieChannel:
             include_base64 = bool(data.get("include_base64", False))
             should_advance = bool(data.get("advance", True))
 
-            # Resolve target movie
-            movie_id = data.get("movie_id")
+            # Resolve target movie — accept both movie_id and subchannel_id
+            movie_id = data.get("movie_id") or data.get("subchannel_id")
             if movie_id:
                 movie = self.db.get_movie(movie_id)
                 if not movie:
@@ -363,8 +433,7 @@ class SlowMovieChannel:
             if not self.db.get_movie(movie_id):
                 raise HTTPException(404, "Movie not found")
             body = await request.json()
-            allowed = {"title", "time_per_frame", "time_per_frame_unit", "skip_frames", "is_random"}
-            updates = {k: v for k, v in body.items() if k in allowed}
+            updates = {k: v for k, v in body.items() if k in _MOVIE_UPDATE_FIELDS}
             updated = self.db.update_movie(movie_id, updates)
             return JSONResponse({"success": True, "movie": updated.to_dict()})
 
@@ -501,6 +570,33 @@ class SlowMovieChannel:
             result.pop("image", None)
             result["frame_bytes_size"] = len(frame_bytes) if frame_bytes else 0
             return JSONResponse(result)
+
+        # --- Sub-channel endpoints (each movie = a sub-channel) ----------
+
+        @router.get("/subchannels")
+        async def list_subchannels():
+            return JSONResponse({"subchannels": self.get_subchannels()})
+
+        @router.get("/subchannels/{subchannel_id}")
+        async def get_subchannel_route(subchannel_id: str):
+            sc = self.get_subchannel(subchannel_id)
+            if not sc:
+                raise HTTPException(404, "Sub-channel not found")
+            return JSONResponse(sc)
+
+        @router.put("/subchannels/{subchannel_id}")
+        async def update_subchannel_route(subchannel_id: str, request: Request):
+            body = await request.json()
+            sc = self.update_subchannel(subchannel_id, body)
+            if not sc:
+                raise HTTPException(404, "Sub-channel not found")
+            return JSONResponse({"success": True, "subchannel": sc})
+
+        @router.delete("/subchannels/{subchannel_id}")
+        async def delete_subchannel_route(subchannel_id: str):
+            if not self.delete_subchannel(subchannel_id):
+                raise HTTPException(404, "Sub-channel not found")
+            return JSONResponse({"success": True, "deleted_id": subchannel_id})
 
         # --- External video directory scan -------------------------------
 

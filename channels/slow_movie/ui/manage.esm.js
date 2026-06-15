@@ -68,6 +68,18 @@ const CSS = `
   .inactive-pip { width: 8px; height: 8px; flex-shrink: 0; }
   .movie-card-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
+  .movie-item { display: flex; flex-direction: column; }
+  .movie-card.has-panel { border-radius: 8px 8px 0 0; border-bottom-color: transparent; }
+  .movie-settings-panel {
+    background: var(--color-background, #0B1314);
+    border: 1px solid var(--color-border, #2a3a3c);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    padding: 14px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .panel-section-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--color-text-tertiary, #666); margin-top: 2px; }
+
   /* Buttons */
   .btn {
     display: inline-flex; align-items: center; gap: 6px;
@@ -170,6 +182,7 @@ class XSlowMovieManager extends HTMLElement {
       seekMovieId: null,
       seekFrame: 0,
       seekTotal: 0,
+      editMovieId: null,
     };
     this._refreshTimer = null;
   }
@@ -440,7 +453,7 @@ class XSlowMovieManager extends HTMLElement {
         </div>
         ${movies.length === 0
           ? `<div class="empty">No movies yet. Add one below.</div>`
-          : `<div class="movie-list">${movies.map(m => this.buildMovieCard(m)).join('')}</div>`
+          : `<div class="movie-list">${movies.map(m => this.buildMovieItem(m)).join('')}</div>`
         }
       </div>
 
@@ -487,17 +500,23 @@ class XSlowMovieManager extends HTMLElement {
     `;
   }
 
-  buildMovieCard(m) {
+  buildMovieCard(m, hasPanel = false) {
     const pct = m.progress_pct ?? 0;
     const isActive = m.is_active;
+    const badges = [
+      m.is_random && '🔀',
+      m.grayscale && (m.dither_mode !== 'none' ? `⬛ ${m.dither_mode.replace('_', '-')}` : '⬛ gray'),
+      m.fit_mode && m.fit_mode !== 'letterbox' && m.fit_mode,
+      !m.loop && '⏹ no-loop',
+    ].filter(Boolean);
     return `
-      <div class="movie-card${isActive ? ' active' : ''}">
+      <div class="movie-card${isActive ? ' active' : ''}${hasPanel ? ' has-panel' : ''}">
         <div class="${isActive ? 'active-pip' : 'inactive-pip'}"></div>
         <div class="movie-card-info">
           <div class="movie-card-title">${this.esc(m.title)}</div>
           <div class="movie-card-meta">
             ${(m.total_frames || 0).toLocaleString()} frames &nbsp;·&nbsp; ${this.fmtDuration(m.duration_seconds)}
-            ${m.is_random ? '&nbsp;·&nbsp; 🔀 random' : ''}
+            ${badges.map(b => `&nbsp;·&nbsp; ${b}`).join('')}
           </div>
           <div class="movie-card-progress">
             <div class="movie-card-progress-fill" style="width:${pct}%"></div>
@@ -507,10 +526,151 @@ class XSlowMovieManager extends HTMLElement {
           ${!isActive ? `<button class="btn btn-primary btn-sm" data-action="activate" data-id="${m.id}">Play</button>` : ''}
           <button class="btn btn-secondary btn-sm btn-icon" data-action="seek" data-id="${m.id}"
             data-current="${m.current_frame || 0}" data-total="${m.total_frames || 0}" title="Seek">⤢</button>
+          <button class="btn btn-secondary btn-sm btn-icon" data-action="edit" data-id="${m.id}" title="Settings">⚙</button>
           <button class="btn btn-danger btn-sm btn-icon" data-action="delete" data-id="${m.id}" data-title="${this.esc(m.title)}" title="Remove">✕</button>
         </div>
       </div>
     `;
+  }
+
+  buildMovieItem(m) {
+    const isEditing = m.id === this.state.editMovieId;
+    return `
+      <div class="movie-item">
+        ${this.buildMovieCard(m, isEditing)}
+        ${isEditing ? this.buildMovieEditPanel(m) : ''}
+      </div>
+    `;
+  }
+
+  buildMovieEditPanel(m) {
+    const hasEnd = m.end_frame !== null && m.end_frame !== undefined;
+    const hasTpf = m.time_per_frame !== null && m.time_per_frame !== undefined;
+    const hasSkip = m.skip_frames !== null && m.skip_frames !== undefined;
+    const id = m.id;
+    return `
+      <div class="movie-settings-panel">
+        <div class="settings-grid">
+          <div class="field">
+            <label>Title</label>
+            <input type="text" class="me-title" data-id="${id}" value="${this.esc(m.title)}" />
+          </div>
+          <div class="field">
+            <label>Fit Mode</label>
+            <select class="me-fit" data-id="${id}">
+              <option value="letterbox"${(m.fit_mode||'letterbox')==='letterbox' ? ' selected':''}>Letterbox (black bars)</option>
+              <option value="crop"${m.fit_mode==='crop' ? ' selected':''}>Crop (fill, lose edges)</option>
+              <option value="stretch"${m.fit_mode==='stretch' ? ' selected':''}>Stretch (distort)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <div class="field">
+            <label>Start Frame</label>
+            <input type="number" class="me-start" data-id="${id}" min="0" max="${(m.total_frames||1)-1}"
+              value="${m.start_frame || 0}" />
+          </div>
+          <div class="field">
+            <label>End Frame (blank = last)</label>
+            <input type="number" class="me-end" data-id="${id}" min="0" max="${(m.total_frames||1)-1}"
+              value="${hasEnd ? m.end_frame : ''}" placeholder="${(m.total_frames||1)-1}" />
+          </div>
+        </div>
+
+        <div class="toggle-row">
+          <span>Loop when finished</span>
+          <label class="toggle">
+            <input type="checkbox" class="me-loop" data-id="${id}" ${m.loop !== false ? 'checked' : ''} />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="toggle-row">
+          <span>Random frame order</span>
+          <label class="toggle">
+            <input type="checkbox" class="me-random" data-id="${id}" ${m.is_random ? 'checked' : ''} />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="toggle-row">
+          <span>Grayscale output</span>
+          <label class="toggle">
+            <input type="checkbox" class="me-gray" data-id="${id}" ${m.grayscale ? 'checked' : ''} />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="field">
+          <label>Dither Mode</label>
+          <select class="me-dither" data-id="${id}">
+            <option value="none"${(m.dither_mode||'none')==='none' ? ' selected':''}>None</option>
+            <option value="floyd_steinberg"${m.dither_mode==='floyd_steinberg' ? ' selected':''}>Floyd-Steinberg</option>
+            <option value="atkinson"${m.dither_mode==='atkinson' ? ' selected':''}>Atkinson (e-paper)</option>
+          </select>
+        </div>
+
+        <hr/>
+        <div class="panel-section-label">Per-Movie Overrides — leave blank to inherit global</div>
+        <div class="settings-grid">
+          <div class="field">
+            <label>Time Per Frame</label>
+            <input type="number" class="me-tpf-val" data-id="${id}" min="1"
+              value="${hasTpf ? m.time_per_frame : ''}" placeholder="global" />
+          </div>
+          <div class="field">
+            <label>Unit</label>
+            <select class="me-tpf-unit" data-id="${id}">
+              ${['seconds','minutes','hours'].map(u => `<option value="${u}"${(m.time_per_frame_unit||'minutes')===u?' selected':''}>${u}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label>Frames to Skip (blank = global)</label>
+          <input type="number" class="me-skip" data-id="${id}" min="1"
+            value="${hasSkip ? m.skip_frames : ''}" placeholder="global" />
+        </div>
+
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
+          <button class="btn btn-ghost btn-sm" data-action="edit" data-id="${id}">Cancel</button>
+          <button class="btn btn-primary btn-sm" data-action="save-movie" data-id="${id}">Save</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async saveMovieSettings(id) {
+    const root = this.shadowRoot;
+    const get = (cls) => root.querySelector(`.${cls}[data-id="${id}"]`);
+    const parseOptInt = (v) => (v !== '' && v !== null && v !== undefined) ? parseInt(v, 10) : null;
+
+    const tpfRaw = get('me-tpf-val')?.value.trim() ?? '';
+    const endRaw = get('me-end')?.value.trim() ?? '';
+    const skipRaw = get('me-skip')?.value.trim() ?? '';
+
+    const updates = {
+      title: get('me-title')?.value.trim() || undefined,
+      loop: get('me-loop')?.checked ?? true,
+      start_frame: parseInt(get('me-start')?.value || '0', 10),
+      end_frame: parseOptInt(endRaw),
+      fit_mode: get('me-fit')?.value || 'letterbox',
+      grayscale: get('me-gray')?.checked ?? false,
+      dither_mode: get('me-dither')?.value || 'none',
+      is_random: get('me-random')?.checked ?? false,
+      time_per_frame: parseOptInt(tpfRaw),
+      time_per_frame_unit: get('me-tpf-unit')?.value || null,
+      skip_frames: parseOptInt(skipRaw),
+    };
+    Object.keys(updates).forEach(k => updates[k] === undefined && delete updates[k]);
+
+    try {
+      await this.apiFetch(`/movies/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      });
+      this.setState({ editMovieId: null });
+      await this.loadAll();
+      this.toast('Movie settings saved');
+    } catch (e) { this.toast(e.message, true); }
   }
 
   buildAddByPath(path, title) {
@@ -632,6 +792,8 @@ class XSlowMovieManager extends HTMLElement {
         if (action === 'activate') this.activateMovie(id);
         else if (action === 'advance') this.advanceFrame(id);
         else if (action === 'delete') this.deleteMovie(id, el.dataset.title);
+        else if (action === 'edit') this.setState({ editMovieId: id === this.state.editMovieId ? null : id });
+        else if (action === 'save-movie') this.saveMovieSettings(id);
         else if (action === 'seek') this.openSeek({
           id,
           current_frame: parseInt(el.dataset.current || '0', 10),

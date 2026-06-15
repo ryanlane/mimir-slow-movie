@@ -23,6 +23,14 @@ class Movie:
     skip_frames: Optional[int] = None
     is_active: bool = False
     is_random: bool = False
+    # Playback behaviour
+    loop: bool = True
+    start_frame: int = 0
+    end_frame: Optional[int] = None
+    # Output appearance
+    fit_mode: str = "letterbox"  # "letterbox" | "crop" | "stretch"
+    grayscale: bool = False
+    dither_mode: str = "none"   # "none" | "floyd_steinberg" | "atkinson"
     added_at: str = ""
     last_played_at: Optional[str] = None
     # Computed display info
@@ -33,9 +41,11 @@ class Movie:
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
-        # Compute progress percentage
-        d["progress_pct"] = round(self.current_frame / self.total_frames * 100, 1) if self.total_frames > 0 else 0.0
-        # Compute estimated completion (in days) based on effective settings
+        start = self.start_frame or 0
+        end = self.end_frame if self.end_frame is not None else max(0, self.total_frames - 1)
+        clip_length = max(1, end - start + 1)
+        relative_frame = max(0, self.current_frame - start)
+        d["progress_pct"] = round(relative_frame / clip_length * 100, 1)
         return d
 
     @classmethod
