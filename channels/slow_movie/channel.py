@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from .models import GlobalSettings, Movie, MovieDatabase
 from .video_service import VideoService
@@ -126,6 +126,7 @@ class SlowMovieChannel:
         active = self.db.get_active_movie()
         settings = self.db.get_settings()
         healthy = self.last_error is None
+        ui_base = f"/api/channels/{self.id}"
         return {
             "id": self.id,
             "name": "Slow Movie Player",
@@ -135,6 +136,14 @@ class SlowMovieChannel:
             "capabilities": {
                 "supports_upload": True,
                 "video_formats": ["mp4", "avi", "mov", "mkv", "webm"],
+            },
+            "ui": {
+                "components": {
+                    "manager": f"{ui_base}/ui/manage.esm.js",
+                },
+                "elements": {
+                    "manager": "x-slow-movie-manager",
+                },
             },
             "status": self.get_status(),
             "healthy": healthy,
@@ -262,6 +271,26 @@ class SlowMovieChannel:
 
     def get_router(self) -> APIRouter:
         router = APIRouter()
+
+        # --- Static UI assets --------------------------------------------
+
+        _ui_dir = _PLUGIN_DIR / "ui"
+
+        @router.get("/ui/{filename:path}")
+        async def serve_ui(filename: str):
+            file_path = _ui_dir / filename
+            # Resolve and guard against path traversal
+            try:
+                file_path = file_path.resolve()
+                _ui_dir.resolve()
+                file_path.relative_to(_ui_dir.resolve())
+            except (ValueError, RuntimeError):
+                raise HTTPException(403, "Forbidden")
+            if not file_path.exists():
+                raise HTTPException(404, f"UI asset not found: {filename}")
+            media_type = "application/javascript" if filename.endswith(".js") else "text/css"
+            return Response(content=file_path.read_bytes(), media_type=media_type,
+                            headers={"Cache-Control": "no-cache"})
 
         # --- Status / manifest -------------------------------------------
 
