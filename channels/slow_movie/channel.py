@@ -12,7 +12,6 @@ import base64
 import json
 import logging
 import random
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,7 +32,7 @@ if not logger.handlers:
 SUPPORTED_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 
 _MOVIE_UPDATE_FIELDS = {
-    "title", "time_per_frame", "time_per_frame_unit", "skip_frames", "is_random",
+    "title", "skip_frames", "is_random",
     "loop", "start_frame", "end_frame", "fit_mode", "grayscale", "dither_mode",
 }
 
@@ -49,8 +48,8 @@ class SlowMovieChannel:
     Slow Movie Player channel for Mimir Platform.
 
     Manages a library of video files and serves individual frames as images.
-    One frame is advanced per request_image call, respecting quiet hours and
-    per-movie timing overrides.
+    Each movie is exposed as a sub-channel. One frame is advanced per
+    request_image call, respecting per-movie timing overrides.
     """
 
     def __init__(self, channel_dir: str):
@@ -82,29 +81,11 @@ class SlowMovieChannel:
         return self._config.get("id", "com.mimir.slowmovie")
 
     # -------------------------------------------------------------------------
-    # Quiet hours
-
-    def _in_quiet_hours(self) -> bool:
-        settings = self.db.get_settings()
-        if not settings.use_quiet_hours:
-            return False
-        now_hour = datetime.now().hour
-        start, end = settings.quiet_start, settings.quiet_end
-        if start < end:
-            return start <= now_hour < end
-        # Wraps midnight
-        return now_hour >= start or now_hour < end
-
-    # -------------------------------------------------------------------------
     # Effective settings (per-movie overrides global)
 
-    def _effective_settings(self, movie: Movie) -> Dict[str, Any]:
+    def _effective_skip(self, movie: Movie) -> int:
         gs = self.db.get_settings()
-        return {
-            "time_per_frame": movie.time_per_frame if movie.time_per_frame is not None else gs.time_per_frame,
-            "time_per_frame_unit": movie.time_per_frame_unit or gs.time_per_frame_unit,
-            "skip_frames": movie.skip_frames if movie.skip_frames is not None else gs.skip_frames,
-        }
+        return movie.skip_frames if movie.skip_frames is not None else gs.skip_frames
 
     # -------------------------------------------------------------------------
     # Core: frame advance + render
@@ -158,7 +139,6 @@ class SlowMovieChannel:
 
     def get_manifest(self) -> Dict[str, Any]:
         movies = self.db.list_movies()
-        active = self.db.get_active_movie()
         settings = self.db.get_settings()
         healthy = self.last_error is None
         ui_base = f"/api/channels/{self.id}"
@@ -183,7 +163,6 @@ class SlowMovieChannel:
             },
             "status": self.get_status(),
             "healthy": healthy,
-            "now_playing": active.to_dict() if active else None,
             "movie_count": len(movies),
             "settings": settings.to_dict(),
             "diagnostics": {
@@ -194,28 +173,11 @@ class SlowMovieChannel:
         }
 
     def get_status(self) -> Dict[str, Any]:
-        active = self.db.get_active_movie()
-        in_quiet = self._in_quiet_hours()
-        status: Dict[str, Any] = {
-            "in_quiet_hours": in_quiet,
+        return {
+            "movie_count": len(self.db.list_movies()),
             "last_update": self.last_update.isoformat() if self.last_update else None,
             "last_error": self.last_error,
         }
-        if active:
-            eff = self._effective_settings(active)
-            progress_pct = round(active.current_frame / active.total_frames * 100, 1) if active.total_frames > 0 else 0.0
-            status.update({
-                "active_movie_id": active.id,
-                "active_movie_title": active.title,
-                "current_frame": active.current_frame,
-                "total_frames": active.total_frames,
-                "progress_pct": progress_pct,
-                "time_per_frame": eff["time_per_frame"],
-                "time_per_frame_unit": eff["time_per_frame_unit"],
-                "skip_frames": eff["skip_frames"],
-                "is_random": active.is_random,
-            })
-        return status
 
     # -------------------------------------------------------------------------
     # Sub-channel protocol (each movie is a sub-channel)
@@ -265,23 +227,19 @@ class SlowMovieChannel:
             include_base64 = bool(data.get("include_base64", False))
             should_advance = bool(data.get("advance", True))
 
-            # Resolve target movie — accept both movie_id and subchannel_id
+            # Resolve target movie — accept movie_id or subchannel_id; fall back to first in list
             movie_id = data.get("movie_id") or data.get("subchannel_id")
             if movie_id:
                 movie = self.db.get_movie(movie_id)
                 if not movie:
                     return {"success": False, "error": f"Movie {movie_id} not found"}
             else:
-                movie = self.db.get_active_movie()
-                if not movie:
-                    return {"success": False, "error": "No active movie set"}
+                movies = self.db.list_movies()
+                if not movies:
+                    return {"success": False, "error": "No movies in library"}
+                movie = movies[0]
 
-            # Quiet hours: serve current frame without advancing
-            if self._in_quiet_hours() and should_advance:
-                should_advance = False
-
-            eff = self._effective_settings(movie)
-            skip = max(1, int(eff["skip_frames"]))
+            skip = max(1, int(self._effective_skip(movie)))
 
             # Determine frame to render
             if should_advance:
@@ -327,7 +285,6 @@ class SlowMovieChannel:
                 "frame_number": next_frame,
                 "total_frames": movie.total_frames,
                 "advanced": should_advance,
-                "in_quiet_hours": self._in_quiet_hours(),
                 "preferred_transport": "bytes",
             }
             if include_base64:
@@ -445,13 +402,6 @@ class SlowMovieChannel:
             self.db.delete_movie(movie_id)
             return JSONResponse({"success": True, "deleted_id": movie_id})
 
-        @router.post("/movies/{movie_id}/activate")
-        async def activate_movie(movie_id: str):
-            movie = self.db.activate_movie(movie_id)
-            if not movie:
-                raise HTTPException(404, "Movie not found")
-            return JSONResponse({"success": True, "movie": movie.to_dict()})
-
         @router.post("/movies/{movie_id}/advance")
         async def advance_movie(movie_id: str, request: Request):
             movie = self.db.get_movie(movie_id)
@@ -541,9 +491,15 @@ class SlowMovieChannel:
 
         @router.get("/frame/current")
         async def get_current_frame(movie_id: Optional[str] = None):
-            movie = self.db.get_movie(movie_id) if movie_id else self.db.get_active_movie()
-            if not movie:
-                raise HTTPException(404, "No active movie" if not movie_id else "Movie not found")
+            if movie_id:
+                movie = self.db.get_movie(movie_id)
+                if not movie:
+                    raise HTTPException(404, "Movie not found")
+            else:
+                movies = self.db.list_movies()
+                if not movies:
+                    raise HTTPException(404, "No movies in library")
+                movie = movies[0]
 
             frame_bytes = self._render_frame(movie, movie.current_frame)
             if frame_bytes is None:

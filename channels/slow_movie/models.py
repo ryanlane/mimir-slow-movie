@@ -17,11 +17,8 @@ class Movie:
     video_path: str
     total_frames: int = 0
     current_frame: int = 0
-    # Per-movie overrides (None = inherit global setting)
-    time_per_frame: Optional[int] = None
-    time_per_frame_unit: Optional[str] = None
+    # Per-movie override (None = inherit global skip_frames)
     skip_frames: Optional[int] = None
-    is_active: bool = False
     is_random: bool = False
     # Playback behaviour
     loop: bool = True
@@ -56,12 +53,7 @@ class Movie:
 
 @dataclass
 class GlobalSettings:
-    time_per_frame: int = 30
-    time_per_frame_unit: str = "minutes"
     skip_frames: int = 1
-    use_quiet_hours: bool = False
-    quiet_start: int = 22
-    quiet_end: int = 7
     video_root_path: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -72,9 +64,6 @@ class GlobalSettings:
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in data.items() if k in known})
 
-    def time_per_frame_seconds(self) -> int:
-        multipliers = {"seconds": 1, "minutes": 60, "hours": 3600}
-        return self.time_per_frame * multipliers.get(self.time_per_frame_unit, 60)
 
 
 class MovieDatabase:
@@ -123,12 +112,6 @@ class MovieDatabase:
     def get_movie(self, movie_id: str) -> Optional[Movie]:
         return self._movies.get(movie_id)
 
-    def get_active_movie(self) -> Optional[Movie]:
-        for m in self._movies.values():
-            if m.is_active:
-                return m
-        return None
-
     def add_movie(self, movie: Movie) -> Movie:
         self._movies[movie.id] = movie
         self._save_movies()
@@ -150,16 +133,6 @@ class MovieDatabase:
         del self._movies[movie_id]
         self._save_movies()
         return True
-
-    def activate_movie(self, movie_id: str) -> Optional[Movie]:
-        if movie_id not in self._movies:
-            return None
-        # Deactivate all others
-        for m in self._movies.values():
-            m.is_active = False
-        self._movies[movie_id].is_active = True
-        self._save_movies()
-        return self._movies[movie_id]
 
     # -------------------------------------------------------------------------
     # Settings
