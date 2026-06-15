@@ -293,23 +293,46 @@ class XSlowMovieManager extends HTMLElement {
     } catch (e) { this.toast(e.message, true); }
   }
 
-  async uploadFile(file) {
+  uploadFile(file) {
     this.setState({ uploadProgress: 0 });
     const formData = new FormData();
     formData.append('file', file);
-    try {
-      const base = this.getApiBase();
-      const url = `${base}/api/channels/${this.channelId}/upload`;
-      const resp = await fetch(url, { method: 'POST', credentials: 'include', body: formData });
-      const data = await resp.json();
-      if (!resp.ok || !data.success) throw new Error(data.detail || data.error || 'Upload failed');
-      this.setState({ uploadProgress: null });
-      await this.loadAll();
-      this.toast(`"${data.movie?.title}" uploaded`);
-    } catch (e) {
-      this.setState({ uploadProgress: null });
-      this.toast(e.message, true);
-    }
+    const base = this.getApiBase();
+    const url = `${base}/api/channels/${this.channelId}/upload`;
+
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          this.setState({ uploadProgress: Math.round((e.loaded / e.total) * 100) });
+        }
+      });
+
+      xhr.addEventListener('load', async () => {
+        let data = {};
+        try { data = JSON.parse(xhr.responseText); } catch {}
+        if (xhr.status >= 200 && xhr.status < 300 && data.success) {
+          this.setState({ uploadProgress: null });
+          await this.loadAll();
+          this.toast(`"${data.movie?.title}" uploaded`);
+        } else {
+          this.setState({ uploadProgress: null });
+          this.toast(data.detail || data.error || 'Upload failed', true);
+        }
+        resolve();
+      });
+
+      xhr.addEventListener('error', () => {
+        this.setState({ uploadProgress: null });
+        this.toast('Upload failed — network error', true);
+        resolve();
+      });
+
+      xhr.open('POST', url);
+      xhr.withCredentials = true;
+      xhr.send(formData);
+    });
   }
 
   async saveSettings() {

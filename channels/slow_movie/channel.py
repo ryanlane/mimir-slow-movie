@@ -435,10 +435,21 @@ class SlowMovieChannel:
             dest = self.uploads_dir / safe_name
             dest.parent.mkdir(parents=True, exist_ok=True)
 
-            content = await file.read()
-            if not content:
+            written = 0
+            try:
+                with open(dest, "wb") as out:
+                    while True:
+                        chunk = await file.read(1024 * 1024)  # 1 MB chunks
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        written += len(chunk)
+            except Exception as exc:
+                dest.unlink(missing_ok=True)
+                raise HTTPException(500, f"Write failed: {exc}") from exc
+            if written == 0:
+                dest.unlink(missing_ok=True)
                 raise HTTPException(400, "Empty file")
-            dest.write_bytes(content)
 
             # Introspect video
             info = VideoService.get_video_info(dest)
