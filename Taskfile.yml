@@ -1,0 +1,17 @@
+version: '3'
+
+tasks:
+  update:sources:
+    desc: Update installed Slow Movie sources without wiping settings or data.
+    cmds:
+      - bash scripts/update_slow_movie.sh
+
+  update:sources:dry:
+    desc: Preview the Slow Movie source update without changing anything.
+    cmds:
+      - DRY_RUN=1 bash scripts/update_slow_movie.sh
+
+  deploy:
+    desc: Alias for update:sources.
+    cmds:
+      - task: update:sources
