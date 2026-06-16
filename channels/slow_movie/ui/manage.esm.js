@@ -132,6 +132,21 @@ const CSS = `
   .toast.error { border-color: #c62828; }
   @keyframes slide-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
+  /* Browse */
+  .browse-dir-row { display: flex; gap: 8px; align-items: flex-end; }
+  .browse-dir-row .field { flex: 1; }
+  .browse-file-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+  .browse-file {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--color-background, #0B1314);
+    border: 1px solid var(--color-border, #2a3a3c);
+    border-radius: 6px; padding: 8px 10px;
+  }
+  .browse-file-name { flex: 1; font-size: 13px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .browse-file-size { font-size: 11px; color: var(--color-text-secondary, #888); flex-shrink: 0; }
+  .browse-file.added { opacity: 0.45; }
+  .browse-file.added .browse-file-name::after { content: ' ✓'; color: var(--color-accent, #00C851); }
+
   /* Misc */
   .empty { text-align: center; padding: 28px; color: var(--color-text-secondary, #888); font-style: italic; }
   .error-msg { color: #ef9a9a; font-size: 13px; padding: 8px 12px; background: #1a0808; border-radius: 6px; border: 1px solid #c62828; }
@@ -151,10 +166,13 @@ class XSlowMovieManager extends HTMLElement {
       settings: null,
       loading: true,
       error: null,
-      addTab: 'path',   // 'path' | 'upload'
+      addTab: 'upload',   // 'upload' | 'browse' | 'path'
       addPath: '',
       addTitle: '',
       uploadProgress: null,
+      browseDirInput: '',
+      browseFiles: null,   // null = not loaded, [] = empty, [...] = files
+      browsing: false,
       showSettings: false,
       showSeekModal: false,
       seekMovieId: null,
@@ -318,6 +336,36 @@ class XSlowMovieManager extends HTMLElement {
     });
   }
 
+  async browseDirectory() {
+    const dir = this.state.browseDirInput.trim();
+    if (!dir) { this.toast('Enter a directory path', true); return; }
+    this.setState({ browsing: true, browseFiles: null });
+    try {
+      const data = await this.apiFetch(`/browse?path=${encodeURIComponent(dir)}`);
+      this.setState({ browsing: false, browseFiles: data.files || [] });
+    } catch (e) {
+      this.setState({ browsing: false, browseFiles: [] });
+      this.toast(e.message, true);
+    }
+  }
+
+  async addFromBrowse(filePath, fileName) {
+    try {
+      await this.apiFetch('/movies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ video_path: filePath }),
+      });
+      // Mark the file as added in the local list without reloading the whole listing
+      const browseFiles = (this.state.browseFiles || []).map(f =>
+        f.path === filePath ? { ...f, already_added: true } : f
+      );
+      this.setState({ browseFiles });
+      await this.loadStatus();
+      this.toast(`Added "${fileName}"`);
+    } catch (e) { this.toast(e.message, true); }
+  }
+
   async saveSettings() {
     const s = this.state.settings;
     if (!s) return;
@@ -393,7 +441,7 @@ class XSlowMovieManager extends HTMLElement {
   buildHTML() {
     const { loading, error, movies, status, settings, showSettings,
             addTab, addPath, addTitle, uploadProgress, showSeekModal,
-            seekFrame, seekTotal } = this.state;
+            seekFrame, seekTotal, browseDirInput, browseFiles, browsing } = this.state;
 
     if (loading) return `<div style="padding:32px;text-align:center"><div class="loading-spinner"></div></div>`;
     if (error) return `<div class="error-msg">⚠ ${error} <button class="btn btn-ghost" id="retry-btn">Retry</button></div>`;
@@ -424,10 +472,13 @@ class XSlowMovieManager extends HTMLElement {
         <div class="section-title">Add Movie</div>
         <div class="add-panel">
           <div class="add-tabs">
-            <button class="add-tab${addTab === 'path' ? ' active' : ''}" data-tab="path">By File Path</button>
             <button class="add-tab${addTab === 'upload' ? ' active' : ''}" data-tab="upload">Upload</button>
+            <button class="add-tab${addTab === 'browse' ? ' active' : ''}" data-tab="browse">Browse Server</button>
+            <button class="add-tab${addTab === 'path' ? ' active' : ''}" data-tab="path">By File Path</button>
           </div>
-          ${addTab === 'path' ? this.buildAddByPath(addPath, addTitle) : this.buildUpload(uploadProgress)}
+          ${addTab === 'upload' ? this.buildUpload(uploadProgress)
+            : addTab === 'browse' ? this.buildBrowse(browseDirInput, browseFiles, browsing, settings)
+            : this.buildAddByPath(addPath, addTitle)}
         </div>
       </div>
 
@@ -592,6 +643,47 @@ class XSlowMovieManager extends HTMLElement {
     `;
   }
 
+  buildBrowse(dirInput, files, loading, settings) {
+    const defaultPath = dirInput || (settings?.video_root_path || '');
+    const fmtSize = (b) => {
+      if (!b) return '';
+      if (b >= 1e9) return `${(b/1e9).toFixed(1)} GB`;
+      if (b >= 1e6) return `${(b/1e6).toFixed(0)} MB`;
+      return `${(b/1e3).toFixed(0)} KB`;
+    };
+
+    let fileListHtml = '';
+    if (loading) {
+      fileListHtml = `<div style="text-align:center;padding:16px"><div class="loading-spinner"></div></div>`;
+    } else if (files === null) {
+      fileListHtml = `<div class="empty" style="padding:16px">Enter a path and click Browse</div>`;
+    } else if (files.length === 0) {
+      fileListHtml = `<div class="empty" style="padding:12px">No supported video files found</div>`;
+    } else {
+      fileListHtml = `<div class="browse-file-list">${files.map(f => `
+        <div class="browse-file${f.already_added ? ' added' : ''}">
+          <span class="browse-file-name">${this.esc(f.name)}</span>
+          <span class="browse-file-size">${fmtSize(f.size)}</span>
+          <button class="btn btn-secondary btn-sm" ${f.already_added ? 'disabled' : ''}
+            data-action="browse-add" data-path="${this.esc(f.path)}" data-name="${this.esc(f.name)}">
+            ${f.already_added ? 'Added' : 'Add'}
+          </button>
+        </div>`).join('')}</div>`;
+    }
+
+    return `
+      <div class="browse-dir-row">
+        <div class="field">
+          <label>Server Directory Path</label>
+          <input type="text" id="browse-dir-input" placeholder="/mnt/media/movies"
+            value="${this.esc(defaultPath)}" />
+        </div>
+        <button class="btn btn-secondary" id="browse-btn" ${loading ? 'disabled' : ''}>Browse</button>
+      </div>
+      ${fileListHtml}
+    `;
+  }
+
   buildUpload(progress) {
     if (progress !== null && progress !== undefined) {
       return `
@@ -665,6 +757,7 @@ class XSlowMovieManager extends HTMLElement {
         e.stopPropagation();
         const action = el.dataset.action;
         const id = el.dataset.id;
+        if (action === 'browse-add') return; // handled by browse listeners above
         if (action === 'advance') this.advanceFrame(id);
         else if (action === 'delete') this.deleteMovie(id, el.dataset.title);
         else if (action === 'edit') this.setState({ editMovieId: id === this.state.editMovieId ? null : id });
@@ -680,6 +773,17 @@ class XSlowMovieManager extends HTMLElement {
     // Add tabs
     container.querySelectorAll('.add-tab').forEach(tab => {
       tab.addEventListener('click', () => this.setState({ addTab: tab.dataset.tab }));
+    });
+
+    // Browse server
+    container.querySelector('#browse-dir-input')?.addEventListener('input', e => {
+      this.state.browseDirInput = e.target.value;
+    });
+    container.querySelector('#browse-btn')?.addEventListener('click', () => this.browseDirectory());
+    container.querySelectorAll('[data-action="browse-add"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this.addFromBrowse(btn.dataset.path, btn.dataset.name);
+      });
     });
 
     // Add by path

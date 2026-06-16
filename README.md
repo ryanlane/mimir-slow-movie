@@ -12,14 +12,15 @@ A Very Slow Movie Player source plugin for the [Mimir](https://github.com/ryanla
 
 - Plays any video file frame-by-frame at user-defined speeds (seconds, minutes, or hours per frame)
 - Configurable frame skip — advance multiple source frames per display update to speed up slow videos
-- Per-movie timing overrides independent of global defaults
+- Per-movie settings — clip range, fit mode, loop, and frame skip independent of global defaults
 - Random mode — picks a random frame from across the video instead of advancing linearly
-- Quiet hours — pause frame advancement during specified hours without interrupting the display
-- Movie library — manage multiple videos, activate one at a time
+- Movie library — manage multiple videos, each independently accessible as a sub-channel
 - Video upload directly through the management UI
-- Directory scan to add existing videos by filesystem path
+- Browse the server's filesystem to add existing videos without uploading
+- Directory scan to add all videos in a folder at once
 - Seek to any frame number; manually advance on demand
-- Management Web Component with live "Now Playing" status and progress bar
+- Frame preview when setting start/end points for a clip
+- Management Web Component with live status and per-movie progress bars
 
 ---
 
@@ -53,9 +54,10 @@ Restart (or hot-reload) the Mimir API — the channel is auto-discovered.
 
 - Mimir Platform v2.1.0+
 - Python 3.8+
-- `fastapi`, `pillow`, `opencv-python-headless`
+- `fastapi`, `pillow`
+- `ffmpeg` and `ffprobe` system packages (installed via apt in the Mimir Docker image)
 
-OpenCV is used for frame extraction. The headless build avoids GUI dependencies and is safe for server environments.
+`ffmpeg` handles all frame extraction and video introspection. It is bundled in the standard Mimir Docker image — no separate installation is needed when running under Docker.
 
 ---
 
@@ -65,17 +67,21 @@ Global settings apply to all movies unless a movie has a per-movie override. Con
 
 | Setting | Type | Default | Description |
 |---|---|---|---|
-| `time_per_frame` | integer | `30` | How long each frame is displayed before advancing |
-| `time_per_frame_unit` | string | `"minutes"` | Unit for frame duration: `seconds`, `minutes`, `hours` |
 | `skip_frames` | integer | `1` | Source video frames to advance per display update |
-| `use_quiet_hours` | boolean | `false` | Pause frame advancement during quiet hours |
-| `quiet_start` | integer | `22` | Hour to begin quiet period (0–23, 24-hour clock) |
-| `quiet_end` | integer | `7` | Hour to end quiet period (0–23, 24-hour clock) |
 | `video_root_path` | string | `""` | Optional directory to scan for video files |
 
-### Per-movie overrides
+### Per-movie settings
 
-Individual movies can override `time_per_frame`, `time_per_frame_unit`, and `skip_frames`. Set `is_random` on a movie to use random frame selection instead of sequential playback.
+Each movie in the library can be configured independently:
+
+| Field | Description |
+|---|---|
+| `title` | Display name |
+| `start_frame` / `end_frame` | Clip the movie to a frame range |
+| `skip_frames` | Per-movie override for the global skip setting |
+| `fit_mode` | How the frame fills the display: `letterbox`, `crop`, or `stretch` |
+| `loop` | Whether to restart from `start_frame` after reaching `end_frame` |
+| `is_random` | Pick a random frame instead of advancing sequentially |
 
 ### Supported video formats
 
@@ -92,8 +98,8 @@ All endpoints are prefixed with `/api/channels/com.mimir.slowmovie`.
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/manifest` | Channel capabilities and schema |
-| `POST` | `/request_image` | Get the current frame (advances playback) |
-| `GET` | `/status` | Current playback status, active movie, frame progress |
+| `POST` | `/request-image` | Get the current frame as image bytes (used by the platform) |
+| `GET` | `/status` | Current playback status and per-movie progress |
 | `GET` | `/settings` | Get global settings |
 | `PUT` | `/settings` | Update global settings |
 | `GET` | `/movies` | List all movies in the library |
@@ -101,12 +107,14 @@ All endpoints are prefixed with `/api/channels/com.mimir.slowmovie`.
 | `GET` | `/movies/{id}` | Get a specific movie's details |
 | `PUT` | `/movies/{id}` | Update a movie's settings or metadata |
 | `DELETE` | `/movies/{id}` | Remove a movie from the library |
-| `POST` | `/movies/{id}/activate` | Set a movie as the active (now playing) movie |
 | `POST` | `/movies/{id}/advance` | Manually advance to the next frame |
 | `POST` | `/movies/{id}/seek` | Seek to a specific frame number |
+| `GET` | `/movies/{id}/frame/{n}` | Return frame `n` as a JPEG (used by the UI preview) |
+| `GET` | `/subchannels` | List movies as sub-channels (used by the program builder) |
 | `POST` | `/upload` | Upload a video file |
+| `GET` | `/browse?path=…` | List supported video files in a server directory |
+| `POST` | `/scan` | Scan `video_root_path` and add all discovered videos |
 | `GET` | `/frame/current` | Return the current frame as an image file |
-| `POST` | `/scan` | Scan `video_root_path` and add discovered videos |
 
 ---
 
@@ -114,12 +122,62 @@ All endpoints are prefixed with `/api/channels/com.mimir.slowmovie`.
 
 The plugin registers a management page in the Mimir UI accessible by clicking the source in **Sources**. From the management interface you can:
 
-- See the active movie with frame progress and estimated completion
-- Add movies by local path or upload a video file
-- Activate any movie from the library
-- Adjust per-movie timing and random mode
+- Upload a video file directly from your browser
+- Browse the server's filesystem to add videos already on the host (see [Using an existing media library](#using-an-existing-media-library))
+- Add a movie by entering its full server path
+- View each movie's frame progress and playback position
+- Adjust per-movie settings (clip range, fit mode, loop, random)
+- Preview any frame when setting start/end points
 - Seek to any frame or manually advance
-- Edit global settings
+- Edit global defaults
+
+---
+
+## Using an existing media library
+
+The **Browse Server** tab in the management UI lets you navigate directories on the host machine and add videos without uploading them. This is the recommended workflow when your videos are already on the same server running Mimir (e.g. a Plex or Jellyfin library).
+
+Because Mimir runs inside Docker, the host path must be mounted into the API container. The cleanest way to do this — without modifying Mimir's shipped `docker-compose.yml` — is a **`docker-compose.override.yml`** file. Docker Compose automatically merges this file with the base compose on every `up`, so it survives updates.
+
+### Setup
+
+1. In the same directory as Mimir's `docker-compose.yml`, create `docker-compose.override.yml`:
+
+```yaml
+services:
+  api:
+    volumes:
+      - /your/media/path:/your/media/path:ro
+```
+
+Replace `/your/media/path` with the actual path on the host. Using the same path inside the container keeps things simple — the path you type in the browser matches the path on disk.
+
+**Example — Plex library:**
+```yaml
+services:
+  api:
+    volumes:
+      - /new-pool/PlexMedia:/new-pool/PlexMedia:ro
+```
+
+**Example — multiple libraries:**
+```yaml
+services:
+  api:
+    volumes:
+      - /mnt/media/movies:/mnt/media/movies:ro
+      - /mnt/media/series:/mnt/media/series:ro
+```
+
+2. Apply the change:
+
+```bash
+docker compose up -d
+```
+
+3. Open the Slow Movie Player management page, click **Browse Server**, and enter the path (e.g. `/new-pool/PlexMedia/Movies`). Supported video files appear in a list — click **Add** next to any file to add it to the library.
+
+> The `:ro` flag mounts the path read-only. Mimir never writes to your media directories.
 
 ---
 
@@ -130,7 +188,7 @@ channels/slow_movie/
 ├── plugin.json          # Channel manifest (id, schema, UI registration)
 ├── channel.py           # SlowMovieChannel implementation
 ├── models.py            # Movie and GlobalSettings dataclasses + MovieDatabase
-├── video_service.py     # OpenCV frame extraction and video metadata
+├── video_service.py     # ffmpeg/ffprobe frame extraction and video metadata
 ├── requirements.txt     # Python dependencies
 ├── ui/
 │   └── manage.esm.js   # Management page Web Component (Shadow DOM)
@@ -143,13 +201,16 @@ channels/slow_movie/
 
 ## Troubleshooting
 
-**No active movie / blank display:** Add a video to the library and activate it through the management interface.
+**No image delivered to a screen:** Confirm the movie's video file is still accessible at the path stored in the library. If you moved or renamed the file, delete the movie entry and re-add it.
 
-**Frame not advancing:** Check quiet hours settings. If quiet hours are active, the current frame is served without advancing. Verify the system clock is correct.
+**Browse Server shows no files:** The directory must be mounted into the API container (see [Using an existing media library](#using-an-existing-media-library)). If the path exists on the host but not in the container, the API returns a "Path not found" error.
 
-**OpenCV not available:** Ensure `opencv-python-headless` is installed in the same Python environment as the Mimir API. The channel logs a warning at startup if OpenCV is missing and falls back to a placeholder.
+**Frame extraction fails / upload rejected:** `ffmpeg` and `ffprobe` must be available inside the container. Both are installed in the standard Mimir Docker image. Check with:
+```bash
+docker exec mimir-api ffmpeg -version
+```
 
-**Large video files:** Frame extraction on very large files can be slow on first access. Subsequent frame requests are faster once OpenCV has indexed the file.
+**Large video files are slow on first frame:** `ffmpeg` must decode from the nearest keyframe to the target frame. Files with infrequent keyframes (common in MKV re-encodes) can take several seconds for seeks deep into the file. Subsequent requests to nearby frames are faster.
 
 **Health check:**
 ```bash

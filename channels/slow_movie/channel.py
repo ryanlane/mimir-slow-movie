@@ -600,6 +600,44 @@ class SlowMovieChannel:
                 raise HTTPException(404, "Sub-channel not found")
             return JSONResponse({"success": True, "deleted_id": subchannel_id})
 
+        # --- Browse a server directory (non-destructive listing) ---------
+
+        @router.get("/browse")
+        async def browse_directory(path: str = ""):
+            browse_dir = Path(path.strip()) if path.strip() else None
+            if not browse_dir:
+                settings = self.db.get_settings()
+                if settings.video_root_path:
+                    browse_dir = Path(settings.video_root_path)
+            if not browse_dir:
+                raise HTTPException(400, "No path provided")
+            if not browse_dir.exists():
+                raise HTTPException(400, f"Path not found: {browse_dir}")
+            if not browse_dir.is_dir():
+                raise HTTPException(400, f"Not a directory: {browse_dir}")
+
+            existing_paths = {m.video_path for m in self.db.list_movies()}
+            files = []
+            try:
+                entries = sorted(browse_dir.iterdir(), key=lambda p: p.name.lower())
+            except PermissionError:
+                raise HTTPException(403, f"Permission denied: {browse_dir}")
+
+            for f in entries:
+                if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS:
+                    try:
+                        size = f.stat().st_size
+                    except OSError:
+                        size = 0
+                    files.append({
+                        "name": f.name,
+                        "path": str(f),
+                        "size": size,
+                        "already_added": str(f) in existing_paths,
+                    })
+
+            return JSONResponse({"path": str(browse_dir), "files": files, "count": len(files)})
+
         # --- External video directory scan -------------------------------
 
         @router.post("/scan")
