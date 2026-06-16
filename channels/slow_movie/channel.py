@@ -226,8 +226,13 @@ class SlowMovieChannel:
             include_base64 = bool(data.get("include_base64", False))
             should_advance = bool(data.get("advance", True))
 
-            # Resolve target movie — accept movie_id or subchannel_id; fall back to first in list
-            movie_id = data.get("movie_id") or data.get("subchannel_id")
+            # Resolve target movie — accept any of the platform's subchannel key names
+            movie_id = (
+                data.get("movie_id")
+                or data.get("subchannel_id")
+                or data.get("gallery_id")
+                or (data.get("settings") or {}).get("subChannelId")
+            )
             if movie_id:
                 movie = self.db.get_movie(movie_id)
                 if not movie:
@@ -489,7 +494,7 @@ class SlowMovieChannel:
             info = VideoService.get_video_info(dest)
             if info["total_frames"] == 0:
                 dest.unlink(missing_ok=True)
-                raise HTTPException(422, "Could not read video metadata – ensure OpenCV is installed and file is valid")
+                raise HTTPException(422, "Could not read video metadata – ensure the file is a valid video and ffmpeg is available")
 
             movie = Movie(
                 id=str(uuid.uuid4()),
@@ -541,6 +546,32 @@ class SlowMovieChannel:
             result.pop("image", None)
             result["frame_bytes_size"] = len(frame_bytes) if frame_bytes else 0
             return JSONResponse(result)
+
+        @router.post("/request-image")
+        async def request_image_binary(request: Request):
+            """Platform-compatible endpoint — returns raw image bytes."""
+            import hashlib as _hashlib
+            body = {}
+            try:
+                body = await request.json()
+            except Exception:
+                pass
+            result = await self.request_image(body)
+            if not result.get("success"):
+                raise HTTPException(500, result.get("error", "request_image failed"))
+            frame_bytes = result.get("bytes")
+            if not frame_bytes:
+                raise HTTPException(500, "No image bytes produced")
+            content_type = result.get("content_type", "image/jpeg")
+            fingerprint = _hashlib.sha256(frame_bytes).hexdigest()[:32]
+            return Response(
+                content=frame_bytes,
+                media_type=content_type,
+                headers={
+                    "X-Content-Fingerprint": fingerprint,
+                    "Cache-Control": "no-store",
+                },
+            )
 
         # --- Sub-channel endpoints (each movie = a sub-channel) ----------
 
