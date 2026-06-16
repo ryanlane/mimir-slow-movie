@@ -59,8 +59,6 @@ class VideoService:
         frame_number: int,
         target_size: Optional[Tuple[int, int]] = None,
         fit_mode: str = "letterbox",
-        grayscale: bool = False,
-        dither_mode: str = "none",
     ) -> Optional[bytes]:
         """Extract a single frame from a video, returning JPEG bytes."""
         if not _CV2_AVAILABLE or not _PIL_AVAILABLE:
@@ -85,9 +83,6 @@ class VideoService:
                 else:
                     img = _resize_letterbox(img, target_size)
 
-            if grayscale:
-                img = _apply_grayscale(img, dither_mode)
-
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=92, optimize=True)
             return buf.getvalue()
@@ -104,13 +99,11 @@ class VideoService:
         output_path: Path,
         target_size: Optional[Tuple[int, int]] = None,
         fit_mode: str = "letterbox",
-        grayscale: bool = False,
-        dither_mode: str = "none",
     ) -> bool:
         """Extract a frame and save it to disk. Returns True on success."""
         data = VideoService.extract_frame(
             video_path, frame_number, target_size,
-            fit_mode=fit_mode, grayscale=grayscale, dither_mode=dither_mode,
+            fit_mode=fit_mode,
         )
         if data is None:
             return False
@@ -148,40 +141,3 @@ def _resize_stretch(img: "Image.Image", target: Tuple[int, int]) -> "Image.Image
     return img.resize(target, Image.LANCZOS)
 
 
-def _apply_grayscale(img: "Image.Image", dither_mode: str = "none") -> "Image.Image":
-    """Convert to grayscale with optional dithering, returning an RGB image."""
-    gray = img.convert("L")
-    if dither_mode == "floyd_steinberg":
-        # PIL's C-implemented Floyd-Steinberg via 1-bit conversion
-        gray = gray.convert("1", dither=Image.Dither.FLOYDSTEINBERG).convert("L")
-    elif dither_mode == "atkinson":
-        gray = _atkinson_dither(gray)
-    return gray.convert("RGB")
-
-
-def _atkinson_dither(img: "Image.Image") -> "Image.Image":
-    """Apply Atkinson dithering to a grayscale PIL image (L mode)."""
-    try:
-        import numpy as np
-    except ImportError:
-        # Fallback to PIL FS dithering when numpy is unavailable
-        return img.convert("1", dither=Image.Dither.FLOYDSTEINBERG).convert("L")
-
-    pixels = np.array(img, dtype=np.float64)
-    h, w = pixels.shape
-
-    for y in range(h):
-        for x in range(w):
-            old = pixels[y, x]
-            new = 255.0 if old > 127.0 else 0.0
-            pixels[y, x] = new
-            err = (old - new) / 8.0
-            for ny, nx in (
-                (y, x + 1), (y, x + 2),
-                (y + 1, x - 1), (y + 1, x), (y + 1, x + 1),
-                (y + 2, x),
-            ):
-                if 0 <= ny < h and 0 <= nx < w:
-                    pixels[ny, nx] += err
-
-    return Image.fromarray(np.clip(pixels, 0, 255).astype(np.uint8), mode="L")

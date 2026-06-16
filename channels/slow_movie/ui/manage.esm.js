@@ -101,6 +101,13 @@ const CSS = `
   .upload-progress { height: 4px; background: #0a1a1c; border-radius: 3px; overflow: hidden; }
   .upload-progress-fill { height: 100%; background: var(--color-accent, #00C851); transition: width 0.2s; }
 
+  /* Frame preview */
+  .frame-preview {
+    width: 100%; aspect-ratio: 16/9; object-fit: contain;
+    background: #050e0f; border-radius: 4px; border: 1px solid var(--color-border, #2a3a3c);
+    display: block; min-height: 60px;
+  }
+
   /* Settings */
   .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .settings-grid.full { grid-template-columns: 1fr; }
@@ -433,7 +440,6 @@ class XSlowMovieManager extends HTMLElement {
     const pct = m.progress_pct ?? 0;
     const badges = [
       m.is_random && '🔀',
-      m.grayscale && (m.dither_mode !== 'none' ? `⬛ ${m.dither_mode.replace('_', '-')}` : '⬛ gray'),
       m.fit_mode && m.fit_mode !== 'letterbox' && m.fit_mode,
       !m.loop && '⏹ no-loop',
     ].filter(Boolean);
@@ -473,6 +479,11 @@ class XSlowMovieManager extends HTMLElement {
     const hasEnd = m.end_frame !== null && m.end_frame !== undefined;
     const hasSkip = m.skip_frames !== null && m.skip_frames !== undefined;
     const id = m.id;
+    const maxFrame = (m.total_frames || 1) - 1;
+    const startFrame = m.start_frame || 0;
+    const endFrame = hasEnd ? m.end_frame : maxFrame;
+    const apiBase = this.getApiBase();
+    const frameUrl = (n) => `${apiBase}/api/channels/${this.channelId}/movies/${id}/frame/${n}`;
     return `
       <div class="movie-settings-panel">
         <div class="field">
@@ -486,14 +497,16 @@ class XSlowMovieManager extends HTMLElement {
 
         <div class="settings-grid">
           <div class="field">
+            <img class="frame-preview me-start-preview" data-id="${id}" src="${frameUrl(startFrame)}" alt="Start frame" />
             <label>Start Frame</label>
-            <input type="number" class="me-start" data-id="${id}" min="0" max="${(m.total_frames||1)-1}"
-              value="${m.start_frame || 0}" />
+            <input type="number" class="me-start" data-id="${id}" min="0" max="${maxFrame}"
+              value="${startFrame}" />
           </div>
           <div class="field">
+            <img class="frame-preview me-end-preview" data-id="${id}" src="${frameUrl(endFrame)}" alt="End frame" />
             <label>End Frame (blank = last)</label>
-            <input type="number" class="me-end" data-id="${id}" min="0" max="${(m.total_frames||1)-1}"
-              value="${hasEnd ? m.end_frame : ''}" placeholder="${(m.total_frames||1)-1}" />
+            <input type="number" class="me-end" data-id="${id}" min="0" max="${maxFrame}"
+              value="${hasEnd ? m.end_frame : ''}" placeholder="${maxFrame}" />
           </div>
         </div>
 
@@ -528,21 +541,6 @@ class XSlowMovieManager extends HTMLElement {
             <option value="stretch"${m.fit_mode==='stretch' ? ' selected':''}>Stretch (distort)</option>
           </select>
         </div>
-        <div class="toggle-row">
-          <span>Grayscale output</span>
-          <label class="toggle">
-            <input type="checkbox" class="me-gray" data-id="${id}" ${m.grayscale ? 'checked' : ''} />
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <div class="field">
-          <label>Dither Mode</label>
-          <select class="me-dither" data-id="${id}">
-            <option value="none"${(m.dither_mode||'none')==='none' ? ' selected':''}>None</option>
-            <option value="floyd_steinberg"${m.dither_mode==='floyd_steinberg' ? ' selected':''}>Floyd-Steinberg</option>
-            <option value="atkinson"${m.dither_mode==='atkinson' ? ' selected':''}>Atkinson (e-paper)</option>
-          </select>
-        </div>
 
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
           <button class="btn btn-ghost btn-sm" data-action="edit" data-id="${id}">Cancel</button>
@@ -565,8 +563,6 @@ class XSlowMovieManager extends HTMLElement {
       loop: get('me-loop')?.checked ?? true,
       is_random: get('me-random')?.checked ?? false,
       fit_mode: get('me-fit')?.value || 'letterbox',
-      grayscale: get('me-gray')?.checked ?? false,
-      dither_mode: get('me-dither')?.value || 'none',
     };
     Object.keys(updates).forEach(k => updates[k] === undefined && delete updates[k]);
 
@@ -718,6 +714,36 @@ class XSlowMovieManager extends HTMLElement {
       };
       saveBtn.addEventListener('click', () => { syncSettings(); this.saveSettings(); });
     }
+
+    // Frame preview on start/end frame inputs
+    const previewTimers = {};
+    const updateFramePreview = (imgEl, movieId, frameNum, maxFrame) => {
+      const n = Math.max(0, Math.min(parseInt(frameNum, 10) || 0, maxFrame));
+      clearTimeout(previewTimers[imgEl.className]);
+      previewTimers[imgEl.className] = setTimeout(() => {
+        imgEl.src = `${this.getApiBase()}/api/channels/${this.channelId}/movies/${movieId}/frame/${n}`;
+      }, 350);
+    };
+    container.querySelectorAll('.me-start').forEach(inp => {
+      const id = inp.dataset.id;
+      const movie = this.state.movies.find(m => m.id === id);
+      const preview = container.querySelector(`.me-start-preview[data-id="${id}"]`);
+      if (preview && movie) {
+        inp.addEventListener('input', () => updateFramePreview(preview, id, inp.value, (movie.total_frames || 1) - 1));
+      }
+    });
+    container.querySelectorAll('.me-end').forEach(inp => {
+      const id = inp.dataset.id;
+      const movie = this.state.movies.find(m => m.id === id);
+      const preview = container.querySelector(`.me-end-preview[data-id="${id}"]`);
+      if (preview && movie) {
+        const maxFrame = (movie.total_frames || 1) - 1;
+        inp.addEventListener('input', () => {
+          const val = inp.value.trim() === '' ? maxFrame : inp.value;
+          updateFramePreview(preview, id, val, maxFrame);
+        });
+      }
+    });
 
     // Seek modal
     const seekRange = container.querySelector('#seek-range');

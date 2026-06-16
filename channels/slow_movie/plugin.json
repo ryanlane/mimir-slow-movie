@@ -2,7 +2,7 @@
   "id": "com.mimir.slowmovie",
   "name": "Slow Movie Player",
   "description": "Plays movies one frame at a time at ultra-slow speeds, inspired by the Very Slow Movie Player concept",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "embedded",
   "entry_point": "channel.py",
   "class_name": "SlowMovieChannel",
@@ -106,7 +106,7 @@
     {
       "path": "/movies/{movie_id}",
       "method": "PUT",
-      "description": "Update movie settings (title, loop, start/end frame, fit mode, grayscale, dither, time overrides)"
+      "description": "Update movie settings (title, loop, start/end frame, fit mode, skip frames)"
     },
     {
       "path": "/movies/{movie_id}",

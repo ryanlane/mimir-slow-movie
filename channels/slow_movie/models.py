@@ -26,8 +26,6 @@ class Movie:
     end_frame: Optional[int] = None
     # Output appearance
     fit_mode: str = "letterbox"  # "letterbox" | "crop" | "stretch"
-    grayscale: bool = False
-    dither_mode: str = "none"   # "none" | "floyd_steinberg" | "atkinson"
     added_at: str = ""
     last_played_at: Optional[str] = None
     # Computed display info

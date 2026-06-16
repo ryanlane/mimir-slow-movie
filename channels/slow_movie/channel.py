@@ -33,7 +33,7 @@ SUPPORTED_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 
 _MOVIE_UPDATE_FIELDS = {
     "title", "skip_frames", "is_random",
-    "loop", "start_frame", "end_frame", "fit_mode", "grayscale", "dither_mode",
+    "loop", "start_frame", "end_frame", "fit_mode",
 }
 
 
@@ -130,8 +130,6 @@ class SlowMovieChannel:
             frame_number,
             target_size,
             fit_mode=movie.fit_mode or "letterbox",
-            grayscale=bool(movie.grayscale),
-            dither_mode=movie.dither_mode or "none",
         )
 
     # -------------------------------------------------------------------------
@@ -385,6 +383,22 @@ class SlowMovieChannel:
                 raise HTTPException(404, "Movie not found")
             return JSONResponse(movie.to_dict())
 
+        @router.get("/movies/{movie_id}/frame/{frame_number}")
+        async def get_frame_preview(movie_id: str, frame_number: int):
+            movie = self.db.get_movie(movie_id)
+            if not movie:
+                raise HTTPException(404, "Movie not found")
+            if movie.total_frames > 0:
+                frame_number = max(0, min(frame_number, movie.total_frames - 1))
+            frame_bytes = self._render_frame(movie, frame_number)
+            if frame_bytes is None:
+                placeholder = self.channel_dir / "placeholder.jpg"
+                if placeholder.exists():
+                    return FileResponse(str(placeholder), media_type="image/jpeg")
+                raise HTTPException(500, "Frame extraction failed")
+            return Response(content=frame_bytes, media_type="image/jpeg",
+                            headers={"Cache-Control": "public, max-age=60"})
+
         @router.put("/movies/{movie_id}")
         async def update_movie(movie_id: str, request: Request):
             if not self.db.get_movie(movie_id):
@@ -531,7 +545,7 @@ class SlowMovieChannel:
 
         @router.get("/subchannels")
         async def list_subchannels():
-            return JSONResponse({"subchannels": self.get_subchannels()})
+            return JSONResponse(self.get_subchannels())
 
         @router.get("/subchannels/{subchannel_id}")
         async def get_subchannel_route(subchannel_id: str):
