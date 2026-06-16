@@ -130,6 +130,7 @@ class SlowMovieChannel:
             frame_number,
             target_size,
             fit_mode=movie.fit_mode or "letterbox",
+            fps=movie.fps or None,
         )
 
     # -------------------------------------------------------------------------
