@@ -457,7 +457,7 @@ class XSlowMovieManager extends HTMLElement {
           <span class="section-title">Library (${movies.length})</span>
           <div style="display:flex;gap:6px">
             <button class="btn btn-secondary btn-sm" id="toggle-settings-btn">
-              ${showSettings ? 'Hide Settings' : 'Settings'}
+              ${showSettings ? 'Hide Global Settings' : 'Global Settings'}
             </button>
           </div>
         </div>
@@ -562,9 +562,10 @@ class XSlowMovieManager extends HTMLElement {
         </div>
 
         <div class="field">
-          <label>Frames to Skip (blank = global default)</label>
+          <label>Frames to Skip (blank = global default: ${this.state.settings?.skip_frames ?? 1})</label>
           <input type="number" class="me-skip" data-id="${id}" min="1"
-            value="${hasSkip ? m.skip_frames : ''}" placeholder="global" />
+            value="${hasSkip ? m.skip_frames : ''}"
+            placeholder="${this.state.settings?.skip_frames ?? 1}" />
         </div>
 
         <div class="toggle-row">
