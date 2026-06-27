@@ -9,6 +9,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .mimir_utils import SettingsMixin
+
 
 @dataclass
 class Movie:
@@ -50,17 +52,9 @@ class Movie:
 
 
 @dataclass
-class GlobalSettings:
+class GlobalSettings(SettingsMixin):
     skip_frames: int = 1
     video_root_path: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "GlobalSettings":
-        known = {f for f in cls.__dataclass_fields__}
-        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 
